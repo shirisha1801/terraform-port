@@ -22,8 +22,10 @@ on:
 permissions:
   contents: write
 
+# Prevent two requests from modifying terraform.tfvars.json
+# at the same time.
 concurrency:
-  group: s3-terraform-update
+  group: s3-terraform
   cancel-in-progress: false
 
 jobs:
@@ -31,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -48,8 +51,9 @@ jobs:
           EOF
 
       # ---------------------------------------------------------
-      # Add new bucket to existing persistent bucket list
+      # Add the new Port input to the existing bucket list
       # ---------------------------------------------------------
+
       - name: Add New Bucket
         working-directory: ./s3
         env:
@@ -73,7 +77,7 @@ jobs:
           }
 
           if aws_region not in allowed_regions:
-              raise ValueError(
+              raise Exception(
                   f"Unsupported AWS region: {aws_region}"
               )
 
@@ -86,18 +90,24 @@ jobs:
           if "buckets" not in data:
               data["buckets"] = {}
 
+          # Do not accidentally move an existing bucket
+          # to another region.
           if bucket_name in data["buckets"]:
-              existing_region = data["buckets"][bucket_name]["region"]
+              existing_region = \
+                  data["buckets"][bucket_name]["region"]
 
               if existing_region != aws_region:
-                  raise ValueError(
-                      f"Bucket {bucket_name} already exists in configuration "
-                      f"with region {existing_region}"
+                  raise Exception(
+                      f"Bucket '{bucket_name}' already exists "
+                      f"in configuration with region "
+                      f"'{existing_region}'."
                   )
 
               print(
-                  f"Bucket {bucket_name} already exists in configuration."
+                  f"Bucket '{bucket_name}' is already "
+                  f"in the configuration."
               )
+
           else:
               data["buckets"][bucket_name] = {
                   "region": aws_region
@@ -107,12 +117,14 @@ jobs:
               json.dump(data, f, indent=2)
               f.write("\n")
 
+          print("Final bucket configuration:")
           print(json.dumps(data, indent=2))
           PY
 
       # ---------------------------------------------------------
       # Terraform
       # ---------------------------------------------------------
+
       - name: Terraform Init
         working-directory: ./s3
         run: terraform init
@@ -123,25 +135,29 @@ jobs:
 
       - name: Terraform Plan
         working-directory: ./s3
-        run: terraform plan
+        run: terraform plan -out=tfplan
 
       - name: Terraform Apply
         working-directory: ./s3
-        run: terraform apply -auto-approve
+        run: terraform apply -auto-approve tfplan
 
       # ---------------------------------------------------------
-      # Save updated desired configuration
+      # Persist the updated bucket list
       # ---------------------------------------------------------
+
       - name: Save Bucket Configuration
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add s3/terraform.tfvars.json
 
           if git diff --cached --quiet; then
-            echo "No configuration changes to commit."
+            echo "No bucket configuration changes."
           else
-            git commit -m "Add S3 bucket ${{ github.event.inputs.bucket_name }}"
+            git commit \
+              -m "Add S3 bucket ${{ github.event.inputs.bucket_name }}"
+
             git push origin main
           fi
