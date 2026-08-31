@@ -3,7 +3,7 @@ terraform {
     organization = "shirisha-lab"
 
     workspaces {
-      tags = ["port-s3"]
+      tags = "port-lab"
     }
   }
 
@@ -20,9 +20,14 @@ provider "aws" {
 }
 
 resource "aws_s3_bucket" "bucket" {
-  bucket = var.bucket_name
+  for_each = var.buckets
+
+   bucket = each.key
 }
 
-output "bucket_name" {
-  value = aws_s3_bucket.bucket.id
+output "bucket_names" {
+  value = {
+     for name, bucket in aws_s3_bucket.bucket :
+     name => bucket.id
+  }
 }
