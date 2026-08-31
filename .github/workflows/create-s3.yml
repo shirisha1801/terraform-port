@@ -19,7 +19,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -36,17 +37,70 @@ jobs:
         working-directory: ./s3
         run: terraform init
 
+      # ---------------------------------------------------------
+      # Get the existing Terraform state
+      # ---------------------------------------------------------
+      - name: Get existing buckets
+        working-directory: ./s3
+        run: |
+          terraform state pull > current-state.json
 
+          if [ ! -s current-state.json ]; then
+            echo "No existing Terraform state found."
+            echo '{}' > existing-buckets.json
+            exit 0
+          fi
+
+          jq '
+            [
+              .resources[]?
+              | select(.type == "aws_s3_bucket")
+              | .instances[]?
+              | .attributes.bucket
+            ]
+            | map(select(. != null))
+            | unique
+            | map({(.): {region: "us-east-1"}})
+            | add // {}
+          ' current-state.json > existing-buckets.json
+
+          echo "Existing buckets:"
+          cat existing-buckets.json
+
+      # ---------------------------------------------------------
+      # Merge existing buckets + new Port bucket
+      # ---------------------------------------------------------
+      - name: Build bucket configuration
+        working-directory: ./s3
+        run: |
+          jq \
+            --arg bucket "${{ github.event.inputs.bucket_name }}" \
+            --arg region "${{ github.event.inputs.aws_region }}" \
+            '. + {
+              ($bucket): {
+                region: $region
+              }
+            }' \
+            existing-buckets.json > terraform.tfvars.json
+
+          echo "Final bucket configuration:"
+          cat terraform.tfvars.json
+
+      # ---------------------------------------------------------
+      # Terraform Plan
+      # ---------------------------------------------------------
       - name: Terraform Plan
         working-directory: ./s3
         run: |
           terraform plan \
-            -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
-            -var="aws_region=${{ github.event.inputs.aws_region }}"
+            -var-file="terraform.tfvars.json"
 
+      # ---------------------------------------------------------
+      # Terraform Apply
+      # ---------------------------------------------------------
       - name: Terraform Apply
         working-directory: ./s3
         run: |
-          terraform apply -auto-approve \
-            -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
-            -var="aws_region=${{ github.event.inputs.aws_region }}"
+          terraform apply \
+            -auto-approve \
+            -var-file="terraform.tfvars.json"
