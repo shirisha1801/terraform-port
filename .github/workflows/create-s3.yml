@@ -37,67 +37,62 @@ jobs:
         working-directory: ./s3
         run: terraform init
 
-      # ---------------------------------------------------------
-      # Get the existing Terraform state
-      # ---------------------------------------------------------
-      - name: Get existing buckets
+      # Get all S3 buckets already managed by this Terraform state
+      - name: Get Existing Buckets
         working-directory: ./s3
         run: |
           terraform state pull > current-state.json
-
-          if [ ! -s current-state.json ]; then
-            echo "No existing Terraform state found."
-            echo '{}' > existing-buckets.json
-            exit 0
-          fi
 
           jq '
             [
               .resources[]?
               | select(.type == "aws_s3_bucket")
               | .instances[]?
-              | .attributes.bucket
+              | {
+                  key: .attributes.bucket,
+                  value: {
+                    region: (.attributes.region // "us-east-1")
+                  }
+                }
+              | select(.key != null)
             ]
-            | map(select(. != null))
-            | unique
-            | map({(.): {region: "us-east-1"}})
-            | add // {}
+            | from_entries
           ' current-state.json > existing-buckets.json
 
           echo "Existing buckets:"
           cat existing-buckets.json
 
-      # ---------------------------------------------------------
-      # Merge existing buckets + new Port bucket
-      # ---------------------------------------------------------
-      - name: Build bucket configuration
+      # Add the new Port input to the existing bucket map
+      - name: Build Bucket Configuration
         working-directory: ./s3
+        env:
+          BUCKET_NAME: ${{ github.event.inputs.bucket_name }}
+          AWS_REGION: ${{ github.event.inputs.aws_region }}
         run: |
           jq \
-            --arg bucket "${{ github.event.inputs.bucket_name }}" \
-            --arg region "${{ github.event.inputs.aws_region }}" \
-            '. + {
-              ($bucket): {
-                region: $region
-              }
+            --arg bucket "$BUCKET_NAME" \
+            --arg region "$AWS_REGION" \
+            '{
+              buckets: (
+                . + {
+                  ($bucket): {
+                    region: $region
+                  }
+                }
+              ),
+              aws_region: $region
             }' \
             existing-buckets.json > terraform.tfvars.json
 
-          echo "Final bucket configuration:"
+          echo "Final Terraform variables:"
           cat terraform.tfvars.json
 
-      # ---------------------------------------------------------
-      # Terraform Plan
-      # ---------------------------------------------------------
       - name: Terraform Plan
         working-directory: ./s3
         run: |
           terraform plan \
             -var-file="terraform.tfvars.json"
 
-      # ---------------------------------------------------------
-      # Terraform Apply
-      # ---------------------------------------------------------
       - name: Terraform Apply
         working-directory: ./s3
         run: |
