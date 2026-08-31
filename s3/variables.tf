@@ -1,5 +1,7 @@
-variable "bucket_name" {
-  type = string
+variable "buckets" {
+  type = map(object({
+    region = string
+  }))
 }
 
 variable "aws_region" {
