@@ -36,16 +36,22 @@ jobs:
         working-directory: ./s3
         run: terraform init
 
+      - name: Select or Create Workspace
+        working-directory: ./s3
+        run: |
+          terraform workspace select \
+            -or-create "s3-${{ github.event.inputs.bucket_name }}"
+
       - name: Terraform Plan
         working-directory: ./s3
         run: |
           terraform plan \
-          -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
-          -var="aws_region=${{ github.event.inputs.aws_region }}"
+            -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
+            -var="aws_region=${{ github.event.inputs.aws_region }}"
 
       - name: Terraform Apply
         working-directory: ./s3
         run: |
           terraform apply -auto-approve \
-          -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
-          -var="aws_region=${{ github.event.inputs.aws_region }}"
+            -var="bucket_name=${{ github.event.inputs.bucket_name }}" \
+            -var="aws_region=${{ github.event.inputs.aws_region }}"
