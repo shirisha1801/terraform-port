@@ -3,7 +3,7 @@ terraform {
     organization = "shirisha-lab"
 
     workspaces {
-      name = "port-lab"
+      tags = ["port-lab"]
     }
   }
 
