@@ -22,10 +22,9 @@ on:
 permissions:
   contents: write
 
-# Prevent two requests from modifying terraform.tfvars.json
-# at the same time.
+# Prevent two Port requests from editing the bucket file simultaneously.
 concurrency:
-  group: s3-terraform
+  group: terraform-s3-port-lab
   cancel-in-progress: false
 
 jobs:
@@ -33,11 +32,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
+
+      - name: Get Latest Configuration
+        run: |
+          git pull --ff-only origin main
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -51,10 +54,9 @@ jobs:
           EOF
 
       # ---------------------------------------------------------
-      # Add the new Port input to the existing bucket list
+      # Add new Port request WITHOUT removing previous buckets
       # ---------------------------------------------------------
-
-      - name: Add New Bucket
+      - name: Add New Bucket To Configuration
         working-directory: ./s3
         env:
           BUCKET_NAME: ${{ github.event.inputs.bucket_name }}
@@ -63,11 +65,12 @@ jobs:
           python3 - <<'PY'
           import json
           import os
+          import sys
 
           filename = "terraform.tfvars.json"
 
-          bucket_name = os.environ["BUCKET_NAME"]
-          aws_region = os.environ["AWS_REGION"]
+          bucket_name = os.environ["BUCKET_NAME"].strip()
+          aws_region = os.environ["AWS_REGION"].strip()
 
           allowed_regions = {
               "us-east-1",
@@ -77,9 +80,8 @@ jobs:
           }
 
           if aws_region not in allowed_regions:
-              raise Exception(
-                  f"Unsupported AWS region: {aws_region}"
-              )
+              print(f"Unsupported region: {aws_region}")
+              sys.exit(1)
 
           try:
               with open(filename, "r") as f:
@@ -90,22 +92,19 @@ jobs:
           if "buckets" not in data:
               data["buckets"] = {}
 
-          # Do not accidentally move an existing bucket
-          # to another region.
           if bucket_name in data["buckets"]:
-              existing_region = \
-                  data["buckets"][bucket_name]["region"]
+              old_region = data["buckets"][bucket_name]["region"]
 
-              if existing_region != aws_region:
-                  raise Exception(
-                      f"Bucket '{bucket_name}' already exists "
-                      f"in configuration with region "
-                      f"'{existing_region}'."
+              if old_region != aws_region:
+                  print(
+                      f"ERROR: Bucket '{bucket_name}' is already "
+                      f"configured in '{old_region}'."
                   )
+                  sys.exit(1)
 
               print(
-                  f"Bucket '{bucket_name}' is already "
-                  f"in the configuration."
+                  f"Bucket '{bucket_name}' already exists "
+                  f"in configuration."
               )
 
           else:
@@ -113,17 +112,29 @@ jobs:
                   "region": aws_region
               }
 
+              print(
+                  f"Adding '{bucket_name}' in '{aws_region}'."
+              )
+
           with open(filename, "w") as f:
-              json.dump(data, f, indent=2)
+              json.dump(data, f, indent=2, sort_keys=True)
               f.write("\n")
 
-          print("Final bucket configuration:")
-          print(json.dumps(data, indent=2))
+          print("\nFinal bucket configuration:")
+          print(json.dumps(data, indent=2, sort_keys=True))
           PY
 
       # ---------------------------------------------------------
-      # Terraform
+      # IMPORTANT DEBUG CHECK
       # ---------------------------------------------------------
+      - name: Show Final Bucket Configuration
+        working-directory: ./s3
+        run: |
+          echo "=========================================="
+          echo "terraform.tfvars.json used for this run:"
+          echo "=========================================="
+          cat terraform.tfvars.json
+          echo "=========================================="
 
       - name: Terraform Init
         working-directory: ./s3
@@ -133,18 +144,22 @@ jobs:
         working-directory: ./s3
         run: terraform validate
 
+      # ---------------------------------------------------------
+      # Check plan before Apply
+      # ---------------------------------------------------------
       - name: Terraform Plan
         working-directory: ./s3
-        run: terraform plan -out=tfplan
+        run: |
+          terraform plan
 
       - name: Terraform Apply
         working-directory: ./s3
-        run: terraform apply -auto-approve tfplan
+        run: |
+          terraform apply -auto-approve
 
       # ---------------------------------------------------------
-      # Persist the updated bucket list
+      # Persist successful bucket request for next Port run
       # ---------------------------------------------------------
-
       - name: Save Bucket Configuration
         run: |
           git config user.name "github-actions[bot]"
@@ -154,7 +169,7 @@ jobs:
           git add s3/terraform.tfvars.json
 
           if git diff --cached --quiet; then
-            echo "No bucket configuration changes."
+            echo "No configuration changes to save."
           else
             git commit \
               -m "Add S3 bucket ${{ github.event.inputs.bucket_name }}"
