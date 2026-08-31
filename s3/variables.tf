@@ -4,6 +4,4 @@ variable "buckets" {
   }))
 }
 
-variable "aws_region" {
-  type = string
-}
+
