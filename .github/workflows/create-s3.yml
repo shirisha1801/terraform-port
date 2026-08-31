@@ -12,7 +12,19 @@ on:
         description: "AWS Region"
         required: true
         default: "us-east-1"
-        type: string
+        type: choice
+        options:
+          - us-east-1
+          - us-east-2
+          - us-west-1
+          - us-west-2
+
+permissions:
+  contents: write
+
+concurrency:
+  group: s3-terraform-update
+  cancel-in-progress: false
 
 jobs:
   terraform:
@@ -21,6 +33,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -33,69 +47,101 @@ jobs:
           }
           EOF
 
-      - name: Terraform Init
-        working-directory: ./s3
-        run: terraform init
-
-      # Get all S3 buckets already managed by this Terraform state
-      - name: Get Existing Buckets
-        working-directory: ./s3
-        run: |
-          terraform state pull > current-state.json
-
-          jq '
-            [
-              .resources[]?
-              | select(.type == "aws_s3_bucket")
-              | .instances[]?
-              | {
-                  key: .attributes.bucket,
-                  value: {
-                    region: (.attributes.region // "us-east-1")
-                  }
-                }
-              | select(.key != null)
-            ]
-            | from_entries
-          ' current-state.json > existing-buckets.json
-
-          echo "Existing buckets:"
-          cat existing-buckets.json
-
-      # Add the new Port input to the existing bucket map
-      - name: Build Bucket Configuration
+      # ---------------------------------------------------------
+      # Add new bucket to existing persistent bucket list
+      # ---------------------------------------------------------
+      - name: Add New Bucket
         working-directory: ./s3
         env:
           BUCKET_NAME: ${{ github.event.inputs.bucket_name }}
           AWS_REGION: ${{ github.event.inputs.aws_region }}
         run: |
-          jq \
-            --arg bucket "$BUCKET_NAME" \
-            --arg region "$AWS_REGION" \
-            '{
-              buckets: (
-                . + {
-                  ($bucket): {
-                    region: $region
-                  }
-                }
-              ),
-              aws_region: $region
-            }' \
-            existing-buckets.json > terraform.tfvars.json
+          python3 - <<'PY'
+          import json
+          import os
 
-          echo "Final Terraform variables:"
-          cat terraform.tfvars.json
+          filename = "terraform.tfvars.json"
+
+          bucket_name = os.environ["BUCKET_NAME"]
+          aws_region = os.environ["AWS_REGION"]
+
+          allowed_regions = {
+              "us-east-1",
+              "us-east-2",
+              "us-west-1",
+              "us-west-2"
+          }
+
+          if aws_region not in allowed_regions:
+              raise ValueError(
+                  f"Unsupported AWS region: {aws_region}"
+              )
+
+          try:
+              with open(filename, "r") as f:
+                  data = json.load(f)
+          except FileNotFoundError:
+              data = {"buckets": {}}
+
+          if "buckets" not in data:
+              data["buckets"] = {}
+
+          if bucket_name in data["buckets"]:
+              existing_region = data["buckets"][bucket_name]["region"]
+
+              if existing_region != aws_region:
+                  raise ValueError(
+                      f"Bucket {bucket_name} already exists in configuration "
+                      f"with region {existing_region}"
+                  )
+
+              print(
+                  f"Bucket {bucket_name} already exists in configuration."
+              )
+          else:
+              data["buckets"][bucket_name] = {
+                  "region": aws_region
+              }
+
+          with open(filename, "w") as f:
+              json.dump(data, f, indent=2)
+              f.write("\n")
+
+          print(json.dumps(data, indent=2))
+          PY
+
+      # ---------------------------------------------------------
+      # Terraform
+      # ---------------------------------------------------------
+      - name: Terraform Init
+        working-directory: ./s3
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: ./s3
+        run: terraform validate
 
       - name: Terraform Plan
         working-directory: ./s3
-        run: |
-          terraform plan \
-            -var-file="terraform.tfvars.json"
+        run: terraform plan
 
       - name: Terraform Apply
         working-directory: ./s3
+        run: terraform apply -auto-approve
+
+      # ---------------------------------------------------------
+      # Save updated desired configuration
+      # ---------------------------------------------------------
+      - name: Save Bucket Configuration
         run: |
-          terraform apply \
-            -auto-approve \
-            -var-file="terraform.tfvars.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add s3/terraform.tfvars.json
+
+          if git diff --cached --quiet; then
+            echo "No configuration changes to commit."
+          else
+            git commit -m "Add S3 bucket ${{ github.event.inputs.bucket_name }}"
+            git push origin main
+          fi
