@@ -3,7 +3,7 @@ terraform {
     organization = "shirisha-lab"
 
     workspaces {
-      tags = ["port-lab"]
+      tags = ["port-s3"]
     }
   }
 
