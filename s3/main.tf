@@ -15,12 +15,14 @@ terraform {
   }
 }
 
-# ---------------------------------------------------
-# AWS providers for supported regions
-# ---------------------------------------------------
+# ---------------------------------------------------------
+# AWS Providers
+# ---------------------------------------------------------
 
+# Keep a default provider.
+# This also helps with resources already created using
+# your previous default AWS provider.
 provider "aws" {
-  alias  = "us_east_1"
   region = "us-east-1"
 }
 
@@ -39,9 +41,9 @@ provider "aws" {
   region = "us-west-2"
 }
 
-# ---------------------------------------------------
-# Separate bucket maps based on region
-# ---------------------------------------------------
+# ---------------------------------------------------------
+# Filter buckets by region
+# ---------------------------------------------------------
 
 locals {
   buckets_us_east_1 = {
@@ -69,12 +71,14 @@ locals {
   }
 }
 
-# ---------------------------------------------------
-# S3 buckets
-# ---------------------------------------------------
+# ---------------------------------------------------------
+# S3 Buckets
+# ---------------------------------------------------------
 
-resource "aws_s3_bucket" "us_east_1" {
-  provider = aws.us_east_1
+# Keep the resource name "bucket" for us-east-1.
+# This helps preserve existing state addresses if your
+# previous buckets were created in us-east-1.
+resource "aws_s3_bucket" "bucket" {
   for_each = local.buckets_us_east_1
 
   bucket = each.key
@@ -103,7 +107,7 @@ resource "aws_s3_bucket" "us_west_2" {
 
 output "bucket_names" {
   value = concat(
-    keys(aws_s3_bucket.us_east_1),
+    keys(aws_s3_bucket.bucket),
     keys(aws_s3_bucket.us_east_2),
     keys(aws_s3_bucket.us_west_1),
     keys(aws_s3_bucket.us_west_2)
