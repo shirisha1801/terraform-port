@@ -36,11 +36,6 @@ jobs:
         working-directory: ./s3
         run: terraform init
 
-      - name: Select or Create Workspace
-        working-directory: ./s3
-        run: |
-          terraform workspace select \
-            -or-create "s3-${{ github.event.inputs.bucket_name }}"
 
       - name: Terraform Plan
         working-directory: ./s3
